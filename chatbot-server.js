@@ -4,21 +4,20 @@ import bodyParser from "body-parser";
 import OpenAI from "openai";
 
 /**
- * SODERBOT for Render
- * - Binds to process.env.PORT (Render requirement)
+ * SODERBOT for Render (mobile-friendly UI)
+ * - Binds to process.env.PORT
  * - Crawls EN pages from sodermanaudiovisual.com
  * - Hybrid retrieval: OpenAI embeddings + TF-IDF sparse scoring
  * - Answers in EN/FI/SV (output language) based on EN content
  * - /health for Render health checks
- * - /kb-status and /reindex for visibility/control
- * - Fancy floating UI with language dropdown + arrow send
+ * - /kb-status and /reindex
+ * - Fancy floating UI with *responsive mobile fixes*
  */
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const OPENAI_KEY = process.env.OPENAI_API_KEY;
 
-// Hard fail if key missing (clear log in Render)
 if (!OPENAI_KEY || OPENAI_KEY.startsWith("sk-your_")) {
   console.error("❌ Missing OPENAI_API_KEY. Set it in Render → Service → Environment.");
   process.exit(1);
@@ -28,10 +27,10 @@ const openai = new OpenAI({ apiKey: OPENAI_KEY });
 
 const SITE = "https://www.sodermanaudiovisual.com";
 const MAX_PAGES = 120;
-const CHUNK_SIZE = 800;        // finer chunks → better pinpointing
+const CHUNK_SIZE = 800;  // finer chunks → better pinpointing
 const MIN_DOC_CHARS = 180;
 const MAX_CONTEXT = 9000;
-const TOP_K = 12;              // how many chunks used as context
+const TOP_K = 12;
 const BATCH_EMBED = 96;
 
 app.use(cors());
@@ -265,33 +264,136 @@ app.post("/reindex", async (_req,res)=>{
   crawl().catch(e=>console.log("reindex error", e?.message||String(e)));
 });
 
-/* ========== UI ========== */
+/* ========== UI (mobile-friendly) ========== */
 app.get("/", (_q,res)=>{
-  res.type("html").send(`<!doctype html><html><head><meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
+  res.type("html").send(`<!doctype html><html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
 <title>SODERBOT</title>
 <style>
-:root { --brand:#0ea5e9; --bg:#0F1115; --fg:#E8EAF0; --muted:#9AA1AC; }
-body{margin:0;font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0b0c10;color:var(--fg)}
-#chat-launcher{position:fixed;bottom:20px;right:20px;width:60px;height:60px;border-radius:50%;background:var(--brand);color:#fff;font-size:24px;display:grid;place-items:center;cursor:pointer;box-shadow:0 12px 30px rgba(0,0,0,.4);transition:transform .2s;z-index:9999}
-#chat-launcher:hover{transform:scale(1.05)}
-#panel{position:fixed;bottom:90px;right:20px;width:380px;max-height:72vh;background:#111319;border:1px solid #222634;border-radius:16px;display:none;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.45);z-index:9998}
-header{padding:12px 16px;background:#0e1118;border-bottom:1px solid #1f2430;display:flex;align-items:center;justify-content:space-between}
-header .left{display:flex;align-items:center;gap:10px}
-header .dot{width:10px;height:10px;border-radius:50%;background:var(--brand)}
-header h1{margin:0;font-size:15px;font-weight:700;color:#fff;letter-spacing:.3px}
-select{background:#0f1320;color:#fff;border:1px solid #2a3344;border-radius:10px;padding:6px 8px;font-size:13px}
-#log{padding:14px;display:flex;flex-direction:column;gap:10px;overflow:auto}
-.msg{max-width:82%;padding:9px 12px;border-radius:12px;line-height:1.45}
-.user{margin-left:auto;background:#1b2330}
-.bot{margin-right:auto;background:#0f1723;border:1px solid #1f2937}
-.muted{color:var(--muted);font-size:12px;padding:0 2px}
-form{display:flex;gap:8px;padding:12px;border-top:1px solid #1f2430}
-input[type="text"]{flex:1;background:#0f1320;color:#fff;border:1px solid #22283a;border-radius:10px;padding:10px 12px;outline:none}
-button{background:var(--brand);color:#fff;border:none;border-radius:10px;padding:0 16px;font-size:18px;cursor:pointer}
-</style></head><body>
+:root {
+  --brand:#0ea5e9; --bg:#0F1115; --fg:#E8EAF0; --muted:#9AA1AC;
+  --inset-t: env(safe-area-inset-top, 0px);
+  --inset-b: env(safe-area-inset-bottom, 0px);
+  --inset-l: env(safe-area-inset-left, 0px);
+  --inset-r: env(safe-area-inset-right, 0px);
+  --gap: 16px;
+  --vh: 1vh; /* set by JS for iOS keyboard */
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: #0b0c10;
+  color: var(--fg);
+  font: 14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+}
+
+/* Floating launcher */
+#chat-launcher {
+  position: fixed;
+  bottom: calc(var(--gap) + var(--inset-b));
+  right: calc(var(--gap) + var(--inset-r));
+  width: 60px; height: 60px;
+  border-radius: 50%;
+  background: var(--brand); color: #fff;
+  display: grid; place-items: center;
+  font-size: 24px; cursor: pointer;
+  box-shadow: 0 12px 30px rgba(0,0,0,.4);
+  transition: transform .2s ease;
+  z-index: 2147483647;
+}
+#chat-launcher:hover { transform: scale(1.05); }
+
+/* Chat panel (desktop default) */
+#panel {
+  position: fixed;
+  bottom: calc(90px + var(--inset-b));
+  right: calc(20px + var(--inset-r));
+  width: 380px;
+  max-height: 72vh;
+  background:#111319; color:#fff;
+  border:1px solid #222634; border-radius:16px;
+  display:none; flex-direction:column; overflow:hidden;
+  box-shadow: 0 20px 60px rgba(0,0,0,.45);
+  z-index: 2147483646;
+}
+
+/* Header */
+header {
+  padding: 12px 16px;
+  background:#0e1118;
+  border-bottom:1px solid #1f2430;
+  display:flex; align-items:center; justify-content:space-between;
+}
+header .left { display:flex; align-items:center; gap:10px; }
+header .dot { width:10px;height:10px;border-radius:50%;background:var(--brand); }
+header h1 { margin:0; font-size:15px; font-weight:700; color:#fff; letter-spacing:.3px; }
+select {
+  background:#0f1320; color:#fff;
+  border:1px solid #2a3344; border-radius:10px;
+  padding: 6px 8px; font-size:13px;
+}
+
+/* Log + messages */
+#log { padding: 14px; display:flex; flex-direction:column; gap:10px; overflow:auto; }
+.msg { max-width:82%; padding:9px 12px; border-radius:12px; line-height:1.45; word-wrap:break-word; }
+.user { margin-left:auto; background:#1b2330; }
+.bot { margin-right:auto; background:#0f1723; border:1px solid #1f2937; }
+.muted { color:var(--muted); font-size:12px; padding:0 2px; }
+
+/* Input row */
+form { display:flex; gap:8px; padding:12px; border-top:1px solid #1f2430; }
+input[type="text"] {
+  flex:1; background:#0f1320; color:#fff;
+  border:1px solid #22283a; border-radius:10px;
+  padding:12px 14px; outline:none;
+  min-height: 44px; /* touch target */
+}
+button {
+  background:var(--brand); color:#fff;
+  border:none; border-radius:10px;
+  padding:0 16px; font-size:20px; cursor:pointer;
+  min-height: 44px; min-width: 48px;
+}
+
+/* ===== Mobile layout ===== */
+@media (max-width: 540px) {
+  #panel {
+    right: 0; left: 0;
+    bottom: 0;
+    width: 100vw;
+    /* Try new dynamic viewport units first, then fallbacks */
+    max-height: min(92dvh, 92svh);
+    /* fallback using JS-set --vh for iOS keyboard correctness */
+    max-height: calc(var(--vh) * 100 - 8px);
+    border-radius: 16px 16px 0 0;
+  }
+  #chat-launcher {
+    width: 56px; height: 56px; font-size: 22px;
+    bottom: calc(14px + var(--inset-b));
+    right: calc(14px + var(--inset-r));
+  }
+  header { padding: 12px 14px; }
+  #log { padding: 12px; }
+  .msg { max-width: 88%; }
+  form { padding: 10px; }
+}
+
+/* Prevent notch / home-bar overlap on ultra-narrow devices */
+@supports (padding: max(0px)) {
+  #panel { padding-bottom: max(0px, var(--inset-b)); }
+}
+</style>
+</head>
+<body>
+
+<!-- Launcher -->
 <div id="chat-launcher" title="SODERBOT">💬</div>
-<div id="panel">
+
+<!-- Panel -->
+<div id="panel" role="dialog" aria-label="SODERBOT chat">
   <header>
     <div class="left"><div class="dot"></div><h1>SODERBOT</h1></div>
     <select id="lang" aria-label="Language">
@@ -300,10 +402,26 @@ button{background:var(--brand);color:#fff;border:none;border-radius:10px;padding
       <option value="sv">Svenska</option>
     </select>
   </header>
+
   <div id="log" aria-live="polite"></div>
-  <form id="f" autocomplete="off"><input id="q" type="text" placeholder="Ask something…" /><button type="submit" title="Send">➤</button></form>
+
+  <form id="f" autocomplete="off">
+    <input id="q" type="text" placeholder="Ask something…" inputmode="text" />
+    <button type="submit" title="Send">➤</button>
+  </form>
 </div>
+
 <script>
+// --- iOS keyboard-safe height ---
+function setVH() {
+  // 1% of viewport height
+  const vh = window.innerHeight * 0.01;
+  document.documentElement.style.setProperty('--vh', `${vh}px`);
+}
+setVH();
+window.addEventListener('resize', setVH);
+window.addEventListener('orientationchange', setVH);
+
 const $panel=document.getElementById("panel"),
       $launch=document.getElementById("chat-launcher"),
       $log=document.getElementById("log"),
@@ -311,11 +429,37 @@ const $panel=document.getElementById("panel"),
       $q=document.getElementById("q"),
       $lang=document.getElementById("lang");
 
-function add(role,text){const d=document.createElement("div");d.className="msg "+(role==="user"?"user":"bot");d.innerHTML=(text||"").replace(/\\n/g,"<br>");$log.appendChild(d);$log.scrollTop=$log.scrollHeight;}
-function addMuted(t){const p=document.createElement("div");p.className="muted";p.textContent=t;$log.appendChild(p);$log.scrollTop=$log.scrollHeight;}
+function add(role,text){
+  const d=document.createElement("div");
+  d.className="msg "+(role==="user"?"user":"bot");
+  d.innerHTML=(text||"").replace(/\\n/g,"<br>");
+  $log.appendChild(d);
+  $log.scrollTop=$log.scrollHeight;
+}
+function addMuted(t){
+  const p=document.createElement("div");
+  p.className="muted";
+  p.textContent=t;
+  $log.appendChild(p);
+  $log.scrollTop=$log.scrollHeight;
+}
 
-$launch.onclick=()=>{$panel.style.display=($panel.style.display==="flex")?"none":"flex";if($panel.style.display==="flex")$q.focus();};
+// Open/close
+$launch.onclick=()=>{
+  const open=$panel.style.display==="flex";
+  $panel.style.display=open?"none":"flex";
+  if(!open){ setTimeout(()=>{ $q.focus(); $log.scrollTop=$log.scrollHeight; }, 50); }
+};
 
+// Keep scrolled to latest message on viewport changes (iOS focus/keyboard)
+["resize","orientationchange"].forEach(evt=>{
+  window.addEventListener(evt, ()=>{ $log.scrollTop=$log.scrollHeight; }, {passive:true});
+});
+
+// Also ensure scroll when input is focused (iOS)
+$q.addEventListener('focus', ()=>{ setTimeout(()=>{ $log.scrollTop=$log.scrollHeight; }, 150); });
+
+// Submit
 $form.addEventListener("submit",async e=>{
   e.preventDefault();
   const text=$q.value.trim();
@@ -326,12 +470,16 @@ $form.addEventListener("submit",async e=>{
     const data=await r.json();
     document.querySelector(".muted:last-child")?.remove();
     add("assistant",data.reply||"(no answer)");
+    $log.scrollTop=$log.scrollHeight;
   }catch(err){
     document.querySelector(".muted:last-child")?.remove();
     add("assistant","Sorry — server error.");
   }
 });
-</script></body></html>`);
+</script>
+
+</body>
+</html>`);
 });
 
 /* ========== Start ========== */
