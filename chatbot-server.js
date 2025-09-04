@@ -4,12 +4,11 @@ import bodyParser from "body-parser";
 import OpenAI from "openai";
 
 /**
- * SODERBOT for Render (robust UI pinning + mobile scaling)
- * - Same crawler + hybrid retrieval (embeddings + TF-IDF)
- * - /health, /kb-status, /reindex
- * - Binds to process.env.PORT
- * - Uses process.env.OPENAI_API_KEY
- * - UI: strong bottom-right pin + iPhone-safe bottom sheet (with fallbacks)
+ * SODERBOT — iPhone zoom & overlap fixes
+ * - Prevents Safari input zoom (viewport + 16px inputs)
+ * - Hides launcher while panel is open so it never covers the chat
+ * - Uses VisualViewport to raise panel above keyboard reliably
+ * - Same crawler + hybrid retrieval, Render-ready
  */
 
 const app = express();
@@ -32,12 +31,11 @@ const BATCH_EMBED = 96;
 app.use(cors());
 app.use(bodyParser.json());
 
-// In-memory KB + sparse
-let KB = [];                      // { id, url, lang:'en', chunk, vec? }
-let VOCAB_IDF = new Map();        // term -> idf
-let CHUNK_TF = new Map();         // id -> Map(term -> tf)
+// ----- KB & sparse index -----
+let KB = [];                   // { id, url, lang:'en', chunk, vec? }
+let VOCAB_IDF = new Map();     // term -> idf
+let CHUNK_TF = new Map();      // id -> Map(term -> tf)
 
-/* -------- Utils -------- */
 function chunkText(s, n=CHUNK_SIZE){ const out=[]; for(let i=0;i<s.length;i+=n) out.push(s.slice(i,i+n)); return out; }
 function stripHtml(html){
   if(!html) return "";
@@ -55,7 +53,7 @@ function unique(a){ return Array.from(new Set(a)); }
 function cosine(a,b){ let dot=0,na=0,nb=0; for(let i=0;i<a.length;i++){dot+=a[i]*b[i];na+=a[i]*a[i];nb+=b[i]*b[i];} if(!na||!nb) return 0; return dot/(Math.sqrt(na)*Math.sqrt(nb)); }
 function escWB(t){ return t.replace(/[.*+?^${}()|[\]\\]/g,"\\$&"); }
 
-/* -------- URLs -------- */
+// ----- URL discovery -----
 async function getSitemapUrls(){
   const set=new Set();
   try{
@@ -63,7 +61,8 @@ async function getSitemapUrls(){
     if(r.ok){
       const xml=await r.text(); const re=/<loc>([^<]+)<\/loc>/gi; let m;
       while((m=re.exec(xml))){
-        const u=m[1].trim().replace(/\/+$/,""); const path=new URL(u).pathname.replace(/^\/+/,"");
+        const u=m[1].trim().replace(/\/+$/,"");
+        const path=new URL(u).pathname.replace(/^\/+/,"");
         if(path==="fi"||path.startsWith("fi/")||path==="sv"||path.startsWith("sv/")) continue; // EN only
         if(u.startsWith(SITE)) set.add(u);
       }
@@ -75,7 +74,7 @@ async function getSitemapUrls(){
   return Array.from(set).slice(0,MAX_PAGES);
 }
 
-/* -------- Fetch page -------- */
+// ----- Fetch page -----
 async function fetchPageStrong(url){
   try{
     const r=await fetch(url,{headers:{
@@ -94,7 +93,7 @@ async function fetchPageStrong(url){
   }catch{ return null; }
 }
 
-/* -------- Crawl + index + embed -------- */
+// ----- Crawl + index + embed -----
 async function crawl(){
   KB=[]; VOCAB_IDF.clear(); CHUNK_TF.clear();
   const urls=await getSitemapUrls(); let id=0;
@@ -106,7 +105,6 @@ async function crawl(){
     console.log("✓ [en]", url, "chunks:", pieces.length, "chars:", doc.length);
   }
   console.log("📚 Crawled chunks:", KB.length);
-  // Sparse DF/TF
   const N=KB.length||1, df=new Map();
   for(const d of KB){
     const terms=unique(tokenize(d.chunk)); const tf=new Map();
@@ -129,7 +127,7 @@ async function embedAllChunks(){
   console.log("🧠 Embeddings ready for",KB.length,"chunks. Dim:",Array.from(dims).join(","));
 }
 
-/* -------- Retrieval (hybrid) -------- */
+// ----- Retrieval (hybrid) -----
 async function retrieveContext(query){
   if(!KB.length) return "";
   const qemb=await openai.embeddings.create({ model:"text-embedding-3-small", input:query });
@@ -147,22 +145,20 @@ async function retrieveContext(query){
   return ctx;
 }
 
-/* -------- Chat API -------- */
+// ----- Chat API -----
 app.post("/chat", async (req,res)=>{
   try{
     const msg=req.body?.message||""; const lang=req.body?.lang||"en";
     if(!msg) return res.json({reply:"Please type a message."});
     const ctx=await retrieveContext(msg);
-    const langRule = (lang==="fi") ? "Answer in Finnish."
-                    : (lang==="sv") ? "Answer in Swedish."
-                    : "Answer in English.";
+    const langRule=(lang==="fi")?"Answer in Finnish.":(lang==="sv")?"Answer in Swedish.":"Answer in English.";
     const sys=[
       "You are SODERBOT, assistant for Soderman Audiovisual.",
       "We are a film production company based in Vaasa and Helsinki. Use 'we'/'our'.",
       "When the question is very short (even a single word), infer the most relevant section from the knowledge and explain briefly with context.",
       langRule,
       "Use only the knowledge provided. If a detail is missing, say so and offer a human handoff.",
-      ctx ? ("Knowledge:\n"+ctx) : "Knowledge: (none yet)"
+      ctx?("Knowledge:\n"+ctx):"Knowledge: (none yet)"
     ].join("\n");
     const r=await openai.chat.completions.create({
       model:"gpt-4o-mini", temperature:0.15,
@@ -172,50 +168,48 @@ app.post("/chat", async (req,res)=>{
   }catch(e){ res.json({reply:"Error "+(e?.message||String(e))}); }
 });
 
-/* -------- Health / Status / Reindex -------- */
+// ----- Health / Status / Reindex -----
 app.get("/health",(_req,res)=>res.json({ok:true}));
-app.get("/kb-status",(_req,res)=>{
-  const embedded=KB.filter(x=>Array.isArray(x.vec)).length;
-  res.json({chunks:KB.length, embedded, vocab:VOCAB_IDF.size});
-});
+app.get("/kb-status",(_req,res)=>{ const embedded=KB.filter(x=>Array.isArray(x.vec)).length; res.json({chunks:KB.length, embedded, vocab:VOCAB_IDF.size}); });
 app.post("/reindex",async (_req,res)=>{ res.json({ok:true,msg:"Re-crawling started"}); crawl().catch(e=>console.log("reindex error",e?.message||String(e))); });
 
-/* -------- UI (safe join; robust pinning) -------- */
+// ----- UI (safe join; iOS fixes) -----
 app.get("/",(_q,res)=>{
   const html=[
     '<!doctype html><html><head><meta charset="utf-8"/>',
-    '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>',
+    // Prevent iOS zoom + use safe area
+    '<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"/>',
     '<title>SODERBOT</title>',
     '<style>',
-    ':root{--brand:#0ea5e9;--bg:#0F1115;--fg:#E8EAF0;--muted:#9AA1AC;--gap:16px;--vh:1vh}',
-    '*{box-sizing:border-box} html,body{height:100%} body{margin:0;background:#0b0c10;color:var(--fg);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}',
-    /* --- Launcher: always bottom-right, with safe-area fallback --- */
-    '#chat-launcher{position:fixed;z-index:2147483647;top:auto;left:auto;right:20px;bottom:20px;width:60px;height:60px;border-radius:50%;background:var(--brand);color:#fff;display:grid;place-items:center;font-size:24px;cursor:pointer;box-shadow:0 12px 30px rgba(0,0,0,.4);transition:transform .2s ease}',
+    ':root{--brand:#0ea5e9;--bg:#0F1115;--fg:#E8EAF0;--muted:#9AA1AC;--vh:1vh}',
+    '*{box-sizing:border-box} html,body{height:100%}',
+    // Disable iOS text auto-zoom side-effects
+    'html{ -webkit-text-size-adjust: 100%; }',
+    'body{margin:0;background:#0b0c10;color:var(--fg);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}',
+    // Launcher pinned bottom-right; hidden while open
+    '#chat-launcher{position:fixed;z-index:2147483647;right:20px;bottom:20px;width:60px;height:60px;border-radius:50%;background:var(--brand);color:#fff;display:grid;place-items:center;font-size:24px;cursor:pointer;box-shadow:0 12px 30px rgba(0,0,0,.4);transition:transform .2s ease, opacity .15s ease}',
     '#chat-launcher:hover{transform:scale(1.05)}',
-    '@supports(padding:max(0px)){#chat-launcher{right:calc(20px + env(safe-area-inset-right,0px));bottom:calc(20px + env(safe-area-inset-bottom,0px))}}',
-    /* --- Panel (desktop default) --- */
-    '#panel{position:fixed;z-index:2147483646;top:auto;left:auto;right:20px;bottom:90px;width:380px;max-height:72vh;background:#111319;color:#fff;border:1px solid #222634;border-radius:16px;display:none;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.45);transform:translateZ(0)}',
-    '@supports(padding:max(0px)){#panel{right:calc(20px + env(safe-area-inset-right,0px));bottom:calc(90px + env(safe-area-inset-bottom,0px))}}',
-    /* Header */
+    // Panel container
+    '#panel{position:fixed;z-index:2147483646;right:20px;bottom:90px;width:380px;max-height:72vh;background:#111319;color:#fff;border:1px solid #222634;border-radius:16px;display:none;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.45)}',
+    // Header, log, input
     'header{padding:12px 16px;background:#0e1118;border-bottom:1px solid #1f2430;display:flex;align-items:center;justify-content:space-between}',
     'header .left{display:flex;align-items:center;gap:10px}.dot{width:10px;height:10px;border-radius:50%;background:var(--brand)} header h1{margin:0;font-size:15px;font-weight:700;letter-spacing:.3px}',
-    'select{background:#0f1320;color:#fff;border:1px solid #2a3344;border-radius:10px;padding:6px 8px;font-size:13px}',
-    /* Log + messages */
+    'select{background:#0f1320;color:#fff;border:1px solid #2a3344;border-radius:10px;padding:6px 8px;font-size:16px}', // 16px
     '#log{padding:14px;display:flex;flex-direction:column;gap:10px;overflow:auto;-webkit-overflow-scrolling:touch}',
     '.msg{max-width:82%;padding:9px 12px;border-radius:12px;line-height:1.45;word-wrap:break-word}.user{margin-left:auto;background:#1b2330}.bot{margin-right:auto;background:#0f1723;border:1px solid #1f2937}',
     '.muted{color:var(--muted);font-size:12px;padding:0 2px}',
-    /* Input row */
     'form{display:flex;gap:8px;padding:12px;border-top:1px solid #1f2430}',
-    'input[type="text"]{flex:1;background:#0f1320;color:#fff;border:1px solid #22283a;border-radius:10px;padding:12px 14px;outline:none;min-height:44px}',
+    // Critical: 16px font-size stops iOS focus zoom
+    'input[type="text"]{flex:1;background:#0f1320;color:#fff;border:1px solid #22283a;border-radius:10px;padding:12px 14px;outline:none;min-height:44px;font-size:16px}',
     'button{background:var(--brand);color:#fff;border:none;border-radius:10px;padding:0 16px;font-size:20px;cursor:pointer;min-height:44px;min-width:48px}',
-    /* --- Mobile bottom sheet --- */
+    // Mobile bottom sheet
     '@media (max-width:540px){',
     ' #panel{left:0;right:0;bottom:0;width:100vw;border-radius:16px 16px 0 0;max-height:75vh}',
     ' #chat-launcher{width:56px;height:56px;font-size:22px}',
     '}',
-    /* Prefer svh/dvh if supported */
+    // Prefer svh/dvh
     '@supports (height: 1svh){ @media (max-width:540px){ #panel{ max-height:min(92svh,92dvh) } } }',
-    /* Fallback using JS --vh for iOS keyboard correctness */
+    // Fallback with --vh (updated by JS)
     '@media (max-width:540px){ #panel{ max-height:calc(var(--vh) * 92) } }',
     '</style>',
     '</head><body>',
@@ -227,17 +221,36 @@ app.get("/",(_q,res)=>{
     ' <form id="f" autocomplete="off"><input id="q" type="text" placeholder="Ask something…" inputmode="text"/><button type="submit" title="Send">➤</button></form>',
     '</div>',
     '<script>',
-    // Robust iOS viewport fix
-    'function setVH(){var vh=window.innerHeight*0.01;document.documentElement.style.setProperty("--vh",vh+"px");}',
-    'setVH(); window.addEventListener("resize",setVH,{passive:true}); window.addEventListener("orientationchange",setVH);',
+    // 1) Robust viewport handling + keyboard lift using VisualViewport
+    'function updateVH(){var vh=(window.innerHeight||0)*0.01;document.documentElement.style.setProperty("--vh",vh+"px");}',
+    'updateVH(); window.addEventListener("resize",updateVH,{passive:true}); window.addEventListener("orientationchange",updateVH);',
+    'var vv=window.visualViewport;',
+    'function applyViewportOffsets(){try{',
+    ' var panel=document.getElementById("panel"); if(!panel) return;',
+    ' if(vv){',
+    '   var kb = Math.max(0, (window.innerHeight - (vv.offsetTop + vv.height)));',
+    '   if(window.matchMedia("(max-width: 540px)").matches){',
+    '     panel.style.bottom = (kb>0? kb.toFixed(0): 0) + "px";',
+    '     panel.style.maxHeight = Math.min(vv.height*0.92, (window.innerHeight - kb)*0.92) + "px";',
+    '   }',
+    ' }',
+    '}catch(e){ /* no-op */ }}',
+    'if(vv){ vv.addEventListener("resize",applyViewportOffsets); vv.addEventListener("scroll",applyViewportOffsets); }',
+    'window.addEventListener("resize",applyViewportOffsets,{passive:true});',
+    'window.addEventListener("orientationchange",function(){ setTimeout(applyViewportOffsets,200); });',
+    'setTimeout(applyViewportOffsets,100);',
+    // 2) Chat behavior; hide launcher while open (prevents overlap)
     'var $panel=document.getElementById("panel"),$launch=document.getElementById("chat-launcher"),$log=document.getElementById("log"),$form=document.getElementById("f"),$q=document.getElementById("q"),$lang=document.getElementById("lang");',
     'function add(role,text){var d=document.createElement("div");d.className="msg "+(role==="user"?"user":"bot");d.innerHTML=(text||"").replace(/\\n/g,"<br>");$log.appendChild(d);$log.scrollTop=$log.scrollHeight;}',
     'function addMuted(t){var p=document.createElement("div");p.className="muted";p.textContent=t;$log.appendChild(p);$log.scrollTop=$log.scrollHeight;}',
-    '$launch.onclick=function(){var open=$panel.style.display==="flex";$panel.style.display=open?"none":"flex";if(!open){setTimeout(function(){$q.focus();$log.scrollTop=$log.scrollHeight;},60);}};',
-    '["resize","orientationchange"].forEach(function(evt){window.addEventListener(evt,function(){$log.scrollTop=$log.scrollHeight;},{passive:true});});',
-    '$q.addEventListener("focus",function(){setTimeout(function(){$log.scrollTop=$log.scrollHeight;},150);});',
+    'function openPanel(){ $panel.style.display="flex"; $launch.style.opacity="0"; $launch.style.pointerEvents="none"; setTimeout(function(){ $q.focus(); $log.scrollTop=$log.scrollHeight; applyViewportOffsets(); },60); }',
+    'function closePanel(){ $panel.style.display="none"; $launch.style.opacity="1"; $launch.style.pointerEvents="auto"; }',
+    '$launch.onclick=function(){ if($panel.style.display==="flex"){ closePanel(); } else { openPanel(); } };',
+    '["resize","orientationchange"].forEach(function(evt){ window.addEventListener(evt,function(){ $log.scrollTop=$log.scrollHeight; },{passive:true}); });',
+    '$q.addEventListener("focus",function(){ setTimeout(function(){ $log.scrollTop=$log.scrollHeight; applyViewportOffsets(); },150); });',
+    // 3) Form submit
     '$form.addEventListener("submit",async function(e){',
-    ' e.preventDefault(); var text=$q.value.trim(); if(!text)return;',
+    ' e.preventDefault(); var text=$q.value.trim(); if(!text) return;',
     ' $q.value=""; add("user",text); addMuted("Thinking…");',
     ' try{',
     '  var r=await fetch("/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({message:text,lang:$lang.value})});',
@@ -252,7 +265,7 @@ app.get("/",(_q,res)=>{
   res.send(html);
 });
 
-/* -------- Start -------- */
+// ----- Start -----
 (async function main(){
   try{ await crawl(); console.log("✅ Knowledge built"); }
   catch(e){ console.log("⚠️ Crawl error:", e?.message||String(e)); }
