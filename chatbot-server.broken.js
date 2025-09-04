@@ -222,8 +222,8 @@ app.post("/chat", async (req, res) => {
 
     const ctx = await retrieveContext(msg);
     const langRule =
-      (lang === "fi") ? "Answer in Finnish. Be faithful to the facts from the knowledge."
-      : (lang === "sv") ? "Answer in Swedish. Be faithful to the facts from the knowledge."
+      lang === "fi" ? "Answer in Finnish. Be faithful to the facts from the knowledge."
+      : lang === "sv" ? "Answer in Swedish. Be faithful to the facts from the knowledge."
       : "Answer in English. Be faithful to the facts from the knowledge.";
 
     const sys = [
@@ -232,7 +232,7 @@ app.post("/chat", async (req, res) => {
       "When the question is very short (even a single word), infer the most relevant section from the knowledge and explain briefly with context.",
       langRule,
       "Cite implicit context only from the provided knowledge. If something is missing, say so briefly and offer a human handoff.",
-      ctx ? ("Knowledge:\n" + ctx) : "Knowledge: (none yet)"
+      ctx ? "Knowledge:\n" + ctx : "Knowledge: (none yet)"
     ].join("\n");
 
     const r = await openai.chat.completions.create({
